@@ -1,6 +1,6 @@
 # Terraform Provider Roadmap
 
-> **Status: BETA.** 5 resources are production-grade with real `/api/v1` CRUD + integration tests.
+> **Status: v1.1.0.** 5 resources with real `/api/v1` CRUD, pinned by contract tests against the server's zod schemas. v1.0.0 was published but non-functional — see README.
 
 ## Shipped (BETA, 5 resources)
 
@@ -16,7 +16,7 @@ Plus shared infrastructure:
 - `httpDo()` helper with envelope-unwrap, typed `apiNotFoundError`, CSRF header (`x-requested-with`)
 - Provider schema validation (`InternalValidate()`)
 - Auth via `EVALGUARD_API_KEY` env or `api_key` provider attribute
-- 2 data sources: `evalguard_eval_results`, `evalguard_security_report`
+- 0 data sources. `evalguard_eval_results` and `evalguard_security_report` were removed in v1.1.0: their Read functions returned nil without calling the API. They return once backed by a real read.
 
 ## Bar for promotion to BETA
 
@@ -65,7 +65,7 @@ The following 15 resources were previously declared as schema-only stubs. They p
 
 | Version | Scope |
 |---|---|
-| `0.1.0` | Five BETA resources (current — not yet published to OpenTofu registry) |
+| `1.1.0` | Five working resources (current branch). Publishes to the Terraform Registry as `EvalGuardAi/evalguard` once the API fixes in this PR are deployed. |
 | `0.2.0` | Adds 6 tier-1 resources from the deferred list |
 | `1.0.0` | All tier-1 + tier-2 resources real; documented compatibility w/ Terraform 1.7+ AND OpenTofu 1.8+ |
 

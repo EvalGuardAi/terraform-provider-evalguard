@@ -1,18 +1,17 @@
-resource "evalguard_firewall_rule" "block_pii" {
-  project_id  = evalguard_project.example.id
-  name        = "block-ssn-in-prompt"
-  description = "Reject prompts that contain a US SSN"
-  rule_type   = "block"
-  priority    = 10
-  enabled     = true
+resource "evalguard_firewall_rule" "block_injection" {
+  project_id = evalguard_project.example.id
+  name       = "block-prompt-injection"
+  type       = "regex"
+  priority   = 10
+  enabled    = true
 
-  conditions {
-    field    = "prompt"
-    operator = "regex"
-    value    = "\\b\\d{3}-\\d{2}-\\d{4}\\b"
-  }
+  condition = jsonencode({
+    pattern = "(?i)ignore (all )?previous instructions"
+  })
 
-  action_config = {
-    message = "Request blocked: sensitive data detected."
-  }
+  action = jsonencode({
+    type = "block"
+  })
+
+  regions = ["EU", "US"]
 }

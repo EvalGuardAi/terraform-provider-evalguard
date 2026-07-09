@@ -19,7 +19,7 @@ terraform {
   required_providers {
     evalguard = {
       source  = "EvalGuardAi/evalguard"
-      version = "~> 1.0"
+      version = "~> 1.1"
     }
   }
 }
@@ -29,8 +29,9 @@ provider "evalguard" {
 }
 
 resource "evalguard_project" "example" {
-  name        = "checkout-assistant"
-  environment = "production"
+  org_id = var.evalguard_org_id
+  name   = "checkout-assistant"
+  slug   = "checkout-assistant"
 }
 ```
 
@@ -61,4 +62,4 @@ export EVALGUARD_API_KEY="eg_..."
 ### Optional
 
 - `api_key` (String, Sensitive) API key for authenticating with the EvalGuard API. Defaults to the `EVALGUARD_API_KEY` environment variable.
-- `base_url` (String) Base URL for the EvalGuard API. Must be an `https://` endpoint (`http://` is permitted only for localhost). Defaults to `https://api.evalguard.ai/v1`.
+- `base_url` (String) Base URL for the EvalGuard API. Must be an `https://` endpoint (`http://` is permitted only for localhost). Defaults to `https://evalguard.ai/api/v1`.

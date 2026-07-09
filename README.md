@@ -1,8 +1,8 @@
 # EvalGuard Terraform Provider
 
-**Status: release-ready. 5 production-grade resources + 2 data sources, CI-gated
-and security-hardened. Registry publish is one founder action away — see
-[PUBLISHING.md](./PUBLISHING.md).**
+**Status: v1.1.0. Five resources with real CRUD against the EvalGuard `/api/v1`
+surface, pinned by contract tests. v1.0.0 was published but non-functional —
+see [What changed in v1.1.0](#what-changed-in-v110).**
 
 CI (`.github/workflows/terraform-provider-ci.yml`) runs on every change: `gofmt`,
 `go vet`, `go test -race` + coverage, `golangci-lint`, **gosec** (SAST),
@@ -13,13 +13,44 @@ idempotency-safe retries (429 always; 5xx only on idempotent verbs — never a
 double-create). Release: signed multi-platform builds via GoReleaser
 (`.goreleaser.yml` + `release-terraform-provider.yml`).
 
-T1.3 (2026-05-21) removed the 15 schema-only stub resources that previously shipped with no-op CRUD handlers. The provider binary now exposes ONLY resources that execute real HTTP against the EvalGuard `/api/v1` surface — `terraform apply` always makes a real state change OR fails loud.
+T1.3 (2026-05-21) removed the 15 schema-only stub resources that previously shipped with no-op CRUD handlers. The provider binary exposes only resources that execute real HTTP against the EvalGuard `/api/v1` surface.
 
-- `evalguard_project` → `/api/v1/projects` (POST/GET/PUT/DELETE)
-- `evalguard_api_key` → `/api/v1/api-keys` (POST/GET/PUT/DELETE)
-- `evalguard_firewall_rule` → `/api/v1/firewall/rules` (POST/GET/PUT/DELETE)
-- `evalguard_eval_schedule` → `/api/v1/eval-schedules` (POST/GET/PUT/DELETE)
+- `evalguard_project` → `POST /api/v1/projects` + `GET|PATCH|DELETE /api/v1/projects/{id}`
+- `evalguard_api_key` → `POST /api/v1/api-keys`, `GET ?orgId`, `DELETE /api/v1/api-keys/{id}` (soft revoke)
+- `evalguard_firewall_rule` → `POST /api/v1/firewall/rules` (upsert), `GET ?projectId`, `DELETE ?ruleId&projectId`
+- `evalguard_eval_schedule` → `POST /api/v1/eval-schedules`, `GET ?projectId`, `PATCH`, `DELETE ?id`
 - `evalguard_gateway_policy` → `/api/v1/gateway/policies` (POST `action=create-rule` + GET list + DELETE ?id — no PUT, update = delete+create)
+
+## What changed in v1.1.0
+
+v1.0.0 shipped to the public registry and could not manage a single resource.
+Three defects, each fatal, found by running the published provider against
+production on 2026-07-09:
+
+1. **`base_url` defaulted to `https://api.evalguard.ai/v1`.** The API lives at
+   `/api/v1`; `api.evalguard.ai` serves the same Next.js app, so `/v1/*` returned
+   an HTML login redirect. Now defaults to `https://evalguard.ai/api/v1`.
+2. **Every request body disagreed with the server.** `evalguard_project` sent
+   `{name, description, environment, tags}` while the API requires
+   `{name, slug, orgId}` — it had no `slug` or `org_id` attribute at all. The
+   other resources sent flat snake_case where the API expects nested camelCase.
+   All five are now generated from the real zod schemas.
+3. **Four resources had no per-id route to Read.** `GET /api/v1/projects/{id}`
+   did not exist, so Terraform could not refresh a project. That route (plus
+   `PATCH` and `DELETE`) now exists; the other three resources read through their
+   collection endpoint and filter by id, and delete via the query-param form the
+   API actually exposes.
+
+The unit suite passed the whole time, because it asserted against an `httptest`
+mock that spoke the same invented dialect as the client. `TestContract_*` in
+`main_test.go` now pins each request body to the field names the server's zod
+schemas require — a mock and a client agreeing with each other is no longer
+enough to make the suite green.
+
+**Removed:** the `evalguard_eval_results` and `evalguard_security_report` data
+sources. Their `Read` functions returned `nil` without calling the API, so every
+attribute silently resolved to its zero value. They will return when backed by a
+real read.
 
 All five carry the `x-requested-with: terraform-provider` header required by `createApiHandler`'s CSRF gate. Read paths surface 404 as `d.SetId("")` so a state-drift caused by an out-of-band delete recovers cleanly on the next plan.
 

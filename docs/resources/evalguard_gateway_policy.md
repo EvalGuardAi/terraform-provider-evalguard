@@ -1,39 +1,26 @@
 ---
 page_title: "evalguard_gateway_policy resources"
 description: |-
-  Manages an AI gateway routing policy — multi-target routing, failover, and semantic cache TTL.
+  Manages an agent gateway policy rule (allow/deny) on an EvalGuard project.
 ---
 
 # evalguard_gateway_policy (Resources)
 
-Manages an AI gateway routing policy — multi-target routing, failover, and semantic cache TTL.
+Manages an agent gateway policy rule on an EvalGuard project.
 
 ## Example Usage
 
 ```terraform
-resource "evalguard_gateway_policy" "prod_routing" {
-  project_id       = evalguard_project.example.id
-  name             = "prod-cost-optimized"
-  description      = "Cost-optimized routing with failover + semantic cache"
-  routing_strategy = "cost_optimized"
-  fallback_model   = "gpt-4o-mini"
-  timeout_ms       = 30000
-  retry_count      = 2
-  cache_ttl_s      = 300
+resource "evalguard_gateway_policy" "deny_external_http" {
+  project_id  = evalguard_project.example.id
+  name        = "deny-external-http"
+  description = "Agents may not call arbitrary external endpoints"
+  effect      = "deny"
+  priority    = 50
 
-  targets {
-    provider = "anthropic"
-    model    = "claude-sonnet-5"
-    weight   = 3
-    max_rpm  = 2000
-  }
-
-  targets {
-    provider = "openai"
-    model    = "gpt-4o"
-    weight   = 1
-    max_rpm  = 1000
-  }
+  conditions = jsonencode({
+    tools = ["http.get", "http.post"]
+  })
 }
 ```
 
@@ -41,21 +28,19 @@ resource "evalguard_gateway_policy" "prod_routing" {
 
 ### Required
 
-- `project_id`
-- `name`
-- `routing_strategy`
-- `targets`
+- `project_id` (String, Forces new resource)
+- `name` (String, Forces new resource)
+- `effect` (String, Forces new resource) Either `allow` or `deny`.
 
 ### Optional
 
-- `description`
-- `enabled`
-- `fallback_model`
-- `timeout_ms`
-- `retry_count`
-- `cache_ttl_s`
+- `description` (String, Forces new resource)
+- `priority` (Number, Forces new resource) Defaults to `100`.
+- `conditions` (String, Forces new resource) Match conditions, encoded with `jsonencode(...)`.
 
 ### Read-Only
 
-- `id`
+- `id` (String)
+- `created_at` (String)
 
+The API exposes no update verb for a policy rule, so every attribute forces a new resource: Terraform replaces the rule rather than reporting a change it cannot make.

@@ -1,33 +1,32 @@
 ---
 page_title: "evalguard_firewall_rule resources"
 description: |-
-  Manages a runtime firewall rule (block/allow/transform/rate_limit/content_filter) with match conditions.
+  Manages a firewall rule on an EvalGuard project.
 ---
 
 # evalguard_firewall_rule (Resources)
 
-Manages a runtime firewall rule (block/allow/transform/rate_limit/content_filter) with match conditions.
+Manages a firewall rule on an EvalGuard project.
 
 ## Example Usage
 
 ```terraform
-resource "evalguard_firewall_rule" "block_pii" {
-  project_id  = evalguard_project.example.id
-  name        = "block-ssn-in-prompt"
-  description = "Reject prompts that contain a US SSN"
-  rule_type   = "block"
-  priority    = 10
-  enabled     = true
+resource "evalguard_firewall_rule" "block_injection" {
+  project_id = evalguard_project.example.id
+  name       = "block-prompt-injection"
+  type       = "regex"
+  priority   = 10
+  enabled    = true
 
-  conditions {
-    field    = "prompt"
-    operator = "regex"
-    value    = "\b\d{3}-\d{2}-\d{4}\b"
-  }
+  condition = jsonencode({
+    pattern = "(?i)ignore (all )?previous instructions"
+  })
 
-  action_config = {
-    message = "Request blocked: sensitive data detected."
-  }
+  action = jsonencode({
+    type = "block"
+  })
+
+  regions = ["EU", "US"]
 }
 ```
 
@@ -35,19 +34,22 @@ resource "evalguard_firewall_rule" "block_pii" {
 
 ### Required
 
-- `project_id`
-- `name`
-- `rule_type`
-- `conditions`
+- `project_id` (String, Forces new resource) Project the rule belongs to.
+- `name` (String)
+- `type` (String) Rule type, e.g. `regex`, `semantic`, `pii`.
+- `condition` (String) Match condition, encoded with `jsonencode(...)`.
+- `action` (String) Action, encoded with `jsonencode(...)`.
 
 ### Optional
 
-- `description`
-- `priority`
-- `enabled`
-- `action_config`
+- `description` (String)
+- `priority` (Number) Defaults to `100`.
+- `enabled` (Boolean) Defaults to `true`.
+- `tags` (List of String)
+- `regions` (List of String) Jurisdiction tokens the rule applies in (`EU`, `US`, `APAC`, an ISO-3166 alpha-2 code, or `GLOBAL`). Empty means everywhere.
 
 ### Read-Only
 
-- `id`
+- `id` (String)
 
+`condition` and `action` are free-form JSON on the server, so they are modelled as `jsonencode(...)` strings rather than a lossy flattened map. The provider canonicalizes them on read, so a round-trip does not produce a perpetual diff.

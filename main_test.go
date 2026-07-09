@@ -253,42 +253,47 @@ func TestProvider_SchemaValidates(t *testing.T) {
 	}
 }
 
-// ─── Resource: evalguard_project (covers full CRUD path) ──────────────────
+// ─── Resource CRUD round-trips ────────────────────────────────────────────
+//
+// These drive the real Create/Read/Update/Delete functions against a mock that
+// speaks the API's ACTUAL contract (verified against apps/web/src/app/api/v1/*
+// on 2026-07-09). The v1.0.0 suite passed while the provider was unusable
+// because its mock spoke an invented contract; TestContract_* below pins the
+// request bodies so that can't recur silently.
 
 func TestResourceProject_CreateThenRead(t *testing.T) {
+	const row = `{"id":"p_42","org_id":"org_1","name":"acme","slug":"acme","settings":{},"created_at":"2026-05-21T00:00:00Z","updated_at":"2026-05-21T00:00:00Z"}`
 	srv := newMockServer(t,
-		&mockRoute{method: "POST", path: "/projects", status: 201,
-			body: envelope(`{"id":"p_42","name":"acme","environment":"production","created_at":"2026-05-21T00:00:00Z"}`)},
-		&mockRoute{method: "GET", path: "/projects/:id", status: 200,
-			body: envelope(`{"id":"p_42","name":"acme","environment":"production","created_at":"2026-05-21T00:00:00Z"}`)},
+		&mockRoute{method: "POST", path: "/projects", status: 201, body: envelope(row)},
+		&mockRoute{method: "GET", path: "/projects/:id", status: 200, body: envelope(row)},
 	)
 	ts := srv.serve()
 	defer ts.Close()
 
 	r := resourceProject()
 	d := r.TestResourceData()
+	_ = d.Set("org_id", "org_1")
 	_ = d.Set("name", "acme")
+	_ = d.Set("slug", "acme")
 
-	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: &http.Client{}}
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
 	if diags := resourceProjectCreate(context.Background(), d, c); diags.HasError() {
 		t.Fatalf("create failed: %v", diags)
 	}
 	if d.Id() != "p_42" {
-		t.Errorf("id not set from response: %q", d.Id())
+		t.Fatalf("id not stored: %q", d.Id())
 	}
-
-	// Now read it back.
-	if diags := resourceProjectRead(context.Background(), d, c); diags.HasError() {
-		t.Fatalf("read failed: %v", diags)
+	if got := d.Get("slug").(string); got != "acme" {
+		t.Errorf("slug not read back: %q", got)
 	}
-	if d.Get("name") != "acme" {
-		t.Errorf("name not populated from server: %v", d.Get("name"))
+	if got := d.Get("org_id").(string); got != "org_1" {
+		t.Errorf("org_id not read back: %q", got)
 	}
 }
 
 func TestResourceProject_ReadMissingClearsState(t *testing.T) {
 	srv := newMockServer(t,
-		&mockRoute{method: "GET", path: "/projects/:id", status: 404},
+		&mockRoute{method: "GET", path: "/projects/:id", status: 404, body: ""},
 	)
 	ts := srv.serve()
 	defer ts.Close()
@@ -296,203 +301,497 @@ func TestResourceProject_ReadMissingClearsState(t *testing.T) {
 	r := resourceProject()
 	d := r.TestResourceData()
 	d.SetId("p_gone")
+	_ = d.Set("org_id", "org_1")
 
-	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: &http.Client{}}
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
 	if diags := resourceProjectRead(context.Background(), d, c); diags.HasError() {
-		t.Fatalf("read should not error on 404: %v", diags)
+		t.Fatalf("read of a deleted project must not error: %v", diags)
 	}
 	if d.Id() != "" {
-		t.Errorf("expected state-clear on 404; id still %q", d.Id())
+		t.Errorf("state not cleared for a 404: id=%q", d.Id())
 	}
 }
 
-func TestResourceProject_DeleteHitsRightPath(t *testing.T) {
+func TestResourceProject_UpdatePatchesPerIdPath(t *testing.T) {
+	const row = `{"id":"p_42","org_id":"org_1","name":"renamed","slug":"acme"}`
+	patch := &mockRoute{method: "PATCH", path: "/projects/:id", status: 200, body: envelope(row)}
 	srv := newMockServer(t,
-		&mockRoute{method: "DELETE", path: "/projects/:id", status: 204},
+		patch,
+		&mockRoute{method: "GET", path: "/projects/:id", status: 200, body: envelope(row)},
 	)
 	ts := srv.serve()
 	defer ts.Close()
 
 	r := resourceProject()
 	d := r.TestResourceData()
-	d.SetId("p_99")
+	d.SetId("p_42")
+	_ = d.Set("org_id", "org_1")
+	_ = d.Set("name", "renamed")
+	_ = d.Set("slug", "acme")
 
-	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: &http.Client{}}
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
+	if diags := resourceProjectUpdate(context.Background(), d, c); diags.HasError() {
+		t.Fatalf("update failed: %v", diags)
+	}
+	if patch.gotBody == nil {
+		t.Fatal("PATCH /projects/{id} was never called")
+	}
+}
+
+func TestResourceProject_DeleteHitsPerIdPath(t *testing.T) {
+	del := &mockRoute{method: "DELETE", path: "/projects/:id", status: 200,
+		body: envelope(`{"id":"p_42","deleted":true}`)}
+	srv := newMockServer(t, del)
+	ts := srv.serve()
+	defer ts.Close()
+
+	r := resourceProject()
+	d := r.TestResourceData()
+	d.SetId("p_42")
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
 	if diags := resourceProjectDelete(context.Background(), d, c); diags.HasError() {
 		t.Fatalf("delete failed: %v", diags)
 	}
-	if srv.hits["DELETE /projects/:id"] != 1 {
-		t.Errorf("expected exactly 1 DELETE hit; got %d", srv.hits["DELETE /projects/:id"])
+	if del.captured == nil || del.captured.URL.Path != "/projects/p_42" {
+		t.Errorf("delete hit the wrong path: %+v", del.captured)
 	}
 	if d.Id() != "" {
-		t.Errorf("delete should clear id; got %q", d.Id())
+		t.Errorf("state not cleared after delete")
 	}
 }
 
-func TestResourceProject_CreateSendsExpectedBody(t *testing.T) {
+func TestResourceAPIKey_CreateStoresSecretThenDelete(t *testing.T) {
+	create := &mockRoute{method: "POST", path: "/api-keys", status: 201,
+		body: envelope(`{"id":"k_1","name":"ci","key_prefix":"eg_abc","created_at":"2026-07-09T00:00:00Z","rawKey":"eg_secret_value"}`)}
 	srv := newMockServer(t,
-		&mockRoute{method: "POST", path: "/projects", status: 201,
-			body: envelope(`{"id":"p_1","name":"acme"}`)},
-	)
-	ts := srv.serve()
-	defer ts.Close()
-
-	r := resourceProject()
-	d := r.TestResourceData()
-	_ = d.Set("name", "acme")
-	_ = d.Set("description", "primary tenant")
-	_ = d.Set("environment", "staging")
-
-	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: &http.Client{}}
-	if diags := resourceProjectCreate(context.Background(), d, c); diags.HasError() {
-		t.Fatalf("create failed: %v", diags)
-	}
-
-	var body map[string]any
-	if err := json.Unmarshal(srv.routes[0].gotBody, &body); err != nil {
-		t.Fatalf("body not JSON: %v / %s", err, srv.routes[0].gotBody)
-	}
-	if body["name"] != "acme" {
-		t.Errorf("name field missing or wrong: %+v", body)
-	}
-	if body["environment"] != "staging" {
-		t.Errorf("environment field missing: %+v", body)
-	}
-}
-
-// ─── Resource: evalguard_api_key ───────────────────────────────────────────
-
-func TestResourceAPIKey_CreateThenDelete(t *testing.T) {
-	srv := newMockServer(t,
-		&mockRoute{method: "POST", path: "/api-keys", status: 201,
-			body: envelope(`{"id":"key_1","name":"ci","key_prefix":"eg_abc"}`)},
-		&mockRoute{method: "DELETE", path: "/api-keys/:id", status: 204},
+		create,
+		&mockRoute{method: "GET", path: "/api-keys", status: 200,
+			body: envelope(`[{"id":"k_1","org_id":"org_1","name":"ci","key_prefix":"eg_abc","scopes":["firewall:check"],"revoked":false}]`)},
+		&mockRoute{method: "DELETE", path: "/api-keys/:id", status: 200, body: envelope(`{"id":"k_1","revoked":true}`)},
 	)
 	ts := srv.serve()
 	defer ts.Close()
 
 	r := resourceAPIKey()
 	d := r.TestResourceData()
+	_ = d.Set("org_id", "org_1")
 	_ = d.Set("name", "ci")
-	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: &http.Client{}}
+	_ = d.Set("scopes", []interface{}{"firewall:check"})
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
 	if diags := resourceAPIKeyCreate(context.Background(), d, c); diags.HasError() {
 		t.Fatalf("create failed: %v", diags)
 	}
-	if d.Id() != "key_1" {
-		t.Errorf("id not set: %q", d.Id())
+	if d.Id() != "k_1" {
+		t.Fatalf("id not stored: %q", d.Id())
 	}
+	// The raw secret is returned exactly once — losing it here would make the
+	// resource useless for wiring a key into another provider.
+	if got := d.Get("key").(string); got != "eg_secret_value" {
+		t.Errorf("raw key not persisted to state: %q", got)
+	}
+
 	if diags := resourceAPIKeyDelete(context.Background(), d, c); diags.HasError() {
 		t.Fatalf("delete failed: %v", diags)
 	}
+}
+
+func TestResourceAPIKey_RevokedKeyClearsState(t *testing.T) {
+	srv := newMockServer(t,
+		&mockRoute{method: "GET", path: "/api-keys", status: 200,
+			body: envelope(`[{"id":"k_1","org_id":"org_1","name":"ci","revoked":true}]`)},
+	)
+	ts := srv.serve()
+	defer ts.Close()
+
+	r := resourceAPIKey()
+	d := r.TestResourceData()
+	d.SetId("k_1")
+	_ = d.Set("org_id", "org_1")
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
+	if diags := resourceAPIKeyRead(context.Background(), d, c); diags.HasError() {
+		t.Fatalf("read failed: %v", diags)
+	}
 	if d.Id() != "" {
-		t.Errorf("delete should clear id")
+		t.Error("a server-side revoked key must drop out of state, not look healthy")
 	}
 }
 
-// ─── Resource: evalguard_firewall_rule ────────────────────────────────────
+func TestResourceAPIKey_ReadAcceptsPaginatedShape(t *testing.T) {
+	// GET /api-keys returns either a bare array or {keys,total}. Both must work.
+	srv := newMockServer(t,
+		&mockRoute{method: "GET", path: "/api-keys", status: 200,
+			body: envelope(`{"keys":[{"id":"k_1","org_id":"org_1","name":"ci","revoked":false}],"total":1}`)},
+	)
+	ts := srv.serve()
+	defer ts.Close()
+
+	r := resourceAPIKey()
+	d := r.TestResourceData()
+	d.SetId("k_1")
+	_ = d.Set("org_id", "org_1")
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
+	if diags := resourceAPIKeyRead(context.Background(), d, c); diags.HasError() {
+		t.Fatalf("read failed: %v", diags)
+	}
+	if d.Id() != "k_1" || d.Get("name").(string) != "ci" {
+		t.Errorf("paginated list shape not handled: id=%q name=%q", d.Id(), d.Get("name"))
+	}
+}
 
 func TestResourceFirewallRule_CreateAndReadRoundTrip(t *testing.T) {
+	const rule = `{"id":"r_1","project_id":"proj_1","name":"block-injection","type":"regex","condition":{"pattern":"ignore previous"},"action":{"type":"block"},"priority":10,"enabled":true}`
 	srv := newMockServer(t,
-		&mockRoute{method: "POST", path: "/firewall/rules", status: 201,
-			body: envelope(`{"id":"r_1","project_id":"p_1","name":"block-ssn","rule_type":"regex","priority":10,"enabled":true,"conditions":[{"field":"output","operator":"matches","value":"\\d{3}-\\d{2}-\\d{4}"}]}`)},
-		&mockRoute{method: "GET", path: "/firewall/rules/:id", status: 200,
-			body: envelope(`{"id":"r_1","project_id":"p_1","name":"block-ssn","rule_type":"regex","priority":10,"enabled":true,"conditions":[{"field":"output","operator":"matches","value":"\\d{3}-\\d{2}-\\d{4}"}]}`)},
+		&mockRoute{method: "POST", path: "/firewall/rules", status: 201, body: envelope(rule)},
+		&mockRoute{method: "GET", path: "/firewall/rules", status: 200, body: envelope(`[` + rule + `]`)},
 	)
 	ts := srv.serve()
 	defer ts.Close()
 
 	r := resourceFirewallRule()
 	d := r.TestResourceData()
-	_ = d.Set("project_id", "p_1")
-	_ = d.Set("name", "block-ssn")
-	_ = d.Set("rule_type", "regex")
-	_ = d.Set("priority", 10)
-	_ = d.Set("enabled", true)
-	_ = d.Set("conditions", []any{
-		map[string]any{"field": "output", "operator": "matches", "value": `\d{3}-\d{2}-\d{4}`},
-	})
+	_ = d.Set("project_id", "proj_1")
+	_ = d.Set("name", "block-injection")
+	_ = d.Set("type", "regex")
+	_ = d.Set("condition", `{"pattern":"ignore previous"}`)
+	_ = d.Set("action", `{"type":"block"}`)
 
-	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: &http.Client{}}
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
 	if diags := resourceFirewallRuleCreate(context.Background(), d, c); diags.HasError() {
 		t.Fatalf("create failed: %v", diags)
 	}
-	if diags := resourceFirewallRuleRead(context.Background(), d, c); diags.HasError() {
-		t.Fatalf("read failed: %v", diags)
+	if d.Id() != "r_1" {
+		t.Fatalf("id not stored: %q", d.Id())
 	}
-	if d.Get("rule_type") != "regex" {
-		t.Errorf("rule_type field not populated")
+	if got := d.Get("type").(string); got != "regex" {
+		t.Errorf("type not read back: %q", got)
 	}
-	if d.Get("priority") != 10 {
-		t.Errorf("priority field not populated: %v", d.Get("priority"))
+	// The JSON fields must survive a server round-trip without a perpetual diff.
+	if got := d.Get("condition").(string); got != `{"pattern":"ignore previous"}` {
+		t.Errorf("condition not canonicalized: %q", got)
 	}
 }
 
-// ─── Resource: evalguard_eval_schedule ─────────────────────────────────────
+func TestResourceFirewallRule_DeletePassesRuleIdAndProjectId(t *testing.T) {
+	del := &mockRoute{method: "DELETE", path: "/firewall/rules", status: 200, body: envelope(`{}`)}
+	srv := newMockServer(t, del)
+	ts := srv.serve()
+	defer ts.Close()
 
-func TestResourceEvalSchedule_Create(t *testing.T) {
+	r := resourceFirewallRule()
+	d := r.TestResourceData()
+	d.SetId("r_1")
+	_ = d.Set("project_id", "proj_1")
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
+	if diags := resourceFirewallRuleDelete(context.Background(), d, c); diags.HasError() {
+		t.Fatalf("delete failed: %v", diags)
+	}
+	q := del.captured.URL.Query()
+	if q.Get("ruleId") != "r_1" || q.Get("projectId") != "proj_1" {
+		t.Errorf("delete must send ruleId + projectId, got %v", q)
+	}
+}
+
+func TestResourceEvalSchedule_CreateThenRead(t *testing.T) {
+	const row = `{"id":"s_1","project_id":"proj_1","name":"nightly","cron_expression":"0 3 * * *","config":{"model":"gpt-4"},"enabled":true}`
 	srv := newMockServer(t,
-		&mockRoute{method: "POST", path: "/eval-schedules", status: 201,
-			body: envelope(`{"id":"sched_1","project_id":"p_1","name":"nightly","dataset_id":"d_1","model":"openai:gpt-4o","metrics":["faithfulness","relevance"],"cron":"0 0 * * *","enabled":true}`)},
+		&mockRoute{method: "POST", path: "/eval-schedules", status: 201, body: envelope(row)},
+		&mockRoute{method: "GET", path: "/eval-schedules", status: 200, body: envelope(`[` + row + `]`)},
 	)
 	ts := srv.serve()
 	defer ts.Close()
 
 	r := resourceEvalSchedule()
 	d := r.TestResourceData()
-	_ = d.Set("project_id", "p_1")
+	_ = d.Set("project_id", "proj_1")
 	_ = d.Set("name", "nightly")
-	_ = d.Set("cron", "0 0 * * *")
-	_ = d.Set("dataset_id", "d_1")
-	_ = d.Set("model", "openai:gpt-4o")
-	_ = d.Set("metrics", []any{"faithfulness", "relevance"})
+	_ = d.Set("cron_expression", "0 3 * * *")
+	_ = d.Set("config", `{"model":"gpt-4"}`)
 
-	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: &http.Client{}}
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
 	if diags := resourceEvalScheduleCreate(context.Background(), d, c); diags.HasError() {
 		t.Fatalf("create failed: %v", diags)
 	}
-	if d.Id() != "sched_1" {
-		t.Errorf("id not set: %q", d.Id())
+	if d.Id() != "s_1" {
+		t.Fatalf("id not stored: %q", d.Id())
+	}
+	if got := d.Get("cron_expression").(string); got != "0 3 * * *" {
+		t.Errorf("cron_expression not read back: %q", got)
 	}
 }
 
-// ─── Resource: evalguard_gateway_policy ────────────────────────────────────
-
 func TestResourceGatewayPolicy_CreateAndDelete(t *testing.T) {
-	// /gateway/policies is action-discriminated (B4 backend): POST is the
-	// create channel; DELETE is /gateway/policies?id=<id>, not RESTful.
+	create := &mockRoute{method: "POST", path: "/gateway/policies", status: 201,
+		body: envelope(`{"rule":{"id":"gp_1","project_id":"proj_1","name":"deny-http","effect":"deny","priority":100,"conditions":{}}}`)}
+	del := &mockRoute{method: "DELETE", path: "/gateway/policies", status: 200, body: envelope(`{}`)}
 	srv := newMockServer(t,
-		// Create-rule action returns the new rule wrapped in `{rule: …}`
-		// — see resourceGatewayPolicyCreate which unmarshals into
-		// `struct { Rule *gatewayPolicyAPI }`.
-		&mockRoute{method: "POST", path: "/gateway/policies", status: 201,
-			body: envelope(`{"rule":{"id":"pol_1","project_id":"p_1","name":"prod","enabled":true,"routing_strategy":"least_latency","targets":[{"provider":"openai","model":"gpt-4o","weight":1,"max_rpm":1000}]}}`)},
-		// Provider URL-encodes the id parameter, so `?id=pol_1` becomes
-		// `?id=pol_1`. The pathMatches helper only matches the path stem;
-		// query params on the underlying request are ignored by the matcher.
-		&mockRoute{method: "DELETE", path: "/gateway/policies", status: 204},
+		create,
+		&mockRoute{method: "GET", path: "/gateway/policies", status: 200,
+			body: envelope(`{"rules":[{"id":"gp_1","project_id":"proj_1","name":"deny-http","effect":"deny","priority":100}],"appliedTemplates":[]}`)},
+		del,
 	)
 	ts := srv.serve()
 	defer ts.Close()
 
 	r := resourceGatewayPolicy()
 	d := r.TestResourceData()
-	_ = d.Set("project_id", "p_1")
-	_ = d.Set("name", "prod")
-	_ = d.Set("enabled", true)
-	_ = d.Set("routing_strategy", "least_latency")
-	_ = d.Set("targets", []any{
-		map[string]any{"provider": "openai", "model": "gpt-4o", "weight": 1, "max_rpm": 1000},
-	})
+	_ = d.Set("project_id", "proj_1")
+	_ = d.Set("name", "deny-http")
+	_ = d.Set("effect", "deny")
 
-	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: &http.Client{}}
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
 	if diags := resourceGatewayPolicyCreate(context.Background(), d, c); diags.HasError() {
 		t.Fatalf("create failed: %v", diags)
 	}
-	if d.Id() != "pol_1" {
-		t.Errorf("id not set: %q", d.Id())
+	if d.Id() != "gp_1" {
+		t.Fatalf("id not unwrapped from {rule:{...}}: %q", d.Id())
 	}
 	if diags := resourceGatewayPolicyDelete(context.Background(), d, c); diags.HasError() {
 		t.Fatalf("delete failed: %v", diags)
+	}
+	if del.captured.URL.Query().Get("id") != "gp_1" {
+		t.Errorf("delete must send ?id=, got %v", del.captured.URL.RawQuery)
+	}
+}
+
+// ─── Contract tests ───────────────────────────────────────────────────────
+//
+// These assert the exact JSON the provider PUTS ON THE WIRE against the field
+// names the server's zod schemas require. They are the guard against the
+// v1.0.0 failure mode: a mock that agrees with the client and disagrees with
+// the server. If someone renames a field back to snake_case, or drops `slug`,
+// these fail — the round-trip tests above would not.
+
+func bodyOf(t *testing.T, route *mockRoute) map[string]interface{} {
+	t.Helper()
+	if route.gotBody == nil {
+		t.Fatal("route captured no body")
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(route.gotBody, &got); err != nil {
+		t.Fatalf("request body was not a JSON object: %v", err)
+	}
+	return got
+}
+
+func requireKeys(t *testing.T, got map[string]interface{}, want ...string) {
+	t.Helper()
+	for _, k := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("request body is missing required field %q (server rejects with 400 VALIDATION_ERROR); body=%v", k, got)
+		}
+	}
+}
+
+func forbidKeys(t *testing.T, got map[string]interface{}, forbidden ...string) {
+	t.Helper()
+	for _, k := range forbidden {
+		if _, ok := got[k]; ok {
+			t.Errorf("request body carries %q, which the server does not accept; body=%v", k, got)
+		}
+	}
+}
+
+// POST /api/v1/projects → createProjectSchema {name, slug} + orgId.
+func TestContract_ProjectCreateBody(t *testing.T) {
+	create := &mockRoute{method: "POST", path: "/projects", status: 201,
+		body: envelope(`{"id":"p_1","org_id":"org_1","name":"acme","slug":"acme"}`)}
+	srv := newMockServer(t, create,
+		&mockRoute{method: "GET", path: "/projects/:id", status: 200,
+			body: envelope(`{"id":"p_1","org_id":"org_1","name":"acme","slug":"acme"}`)})
+	ts := srv.serve()
+	defer ts.Close()
+
+	d := resourceProject().TestResourceData()
+	_ = d.Set("org_id", "org_1")
+	_ = d.Set("name", "acme")
+	_ = d.Set("slug", "acme")
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
+	if diags := resourceProjectCreate(context.Background(), d, c); diags.HasError() {
+		t.Fatalf("create failed: %v", diags)
+	}
+	got := bodyOf(t, create)
+	requireKeys(t, got, "name", "slug", "orgId")
+	forbidKeys(t, got, "org_id", "environment", "tags", "description")
+}
+
+// POST /api/v1/firewall/rules → {projectId, rule:{name,type,condition,action}}.
+func TestContract_FirewallRuleCreateBody(t *testing.T) {
+	create := &mockRoute{method: "POST", path: "/firewall/rules", status: 201,
+		body: envelope(`{"id":"r_1","project_id":"proj_1","name":"n","type":"regex","condition":{},"action":{},"enabled":true}`)}
+	srv := newMockServer(t, create,
+		&mockRoute{method: "GET", path: "/firewall/rules", status: 200, body: envelope(`[]`)})
+	ts := srv.serve()
+	defer ts.Close()
+
+	d := resourceFirewallRule().TestResourceData()
+	_ = d.Set("project_id", "proj_1")
+	_ = d.Set("name", "n")
+	_ = d.Set("type", "regex")
+	_ = d.Set("condition", `{"pattern":"x"}`)
+	_ = d.Set("action", `{"type":"block"}`)
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
+	if diags := resourceFirewallRuleCreate(context.Background(), d, c); diags.HasError() {
+		t.Fatalf("create failed: %v", diags)
+	}
+	got := bodyOf(t, create)
+	requireKeys(t, got, "projectId", "rule")
+	forbidKeys(t, got, "project_id", "rule_type", "conditions")
+
+	rule, ok := got["rule"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("rule must be a nested object, got %T", got["rule"])
+	}
+	requireKeys(t, rule, "name", "type", "condition", "action")
+	forbidKeys(t, rule, "rule_type", "conditions")
+}
+
+// POST /api/v1/eval-schedules → {projectId, name, cronExpression, config}.
+func TestContract_EvalScheduleCreateBody(t *testing.T) {
+	create := &mockRoute{method: "POST", path: "/eval-schedules", status: 201,
+		body: envelope(`{"id":"s_1","project_id":"proj_1","name":"n"}`)}
+	srv := newMockServer(t, create,
+		&mockRoute{method: "GET", path: "/eval-schedules", status: 200, body: envelope(`[]`)})
+	ts := srv.serve()
+	defer ts.Close()
+
+	d := resourceEvalSchedule().TestResourceData()
+	_ = d.Set("project_id", "proj_1")
+	_ = d.Set("name", "n")
+	_ = d.Set("cron_expression", "0 3 * * *")
+	_ = d.Set("config", `{"model":"gpt-4"}`)
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
+	if diags := resourceEvalScheduleCreate(context.Background(), d, c); diags.HasError() {
+		t.Fatalf("create failed: %v", diags)
+	}
+	got := bodyOf(t, create)
+	requireKeys(t, got, "projectId", "name", "cronExpression", "config")
+	forbidKeys(t, got, "project_id", "cron", "dataset_id", "model", "metrics")
+}
+
+// POST /api/v1/api-keys → {orgId, name, scopes, expiresAt?}.
+func TestContract_APIKeyCreateBody(t *testing.T) {
+	create := &mockRoute{method: "POST", path: "/api-keys", status: 201,
+		body: envelope(`{"id":"k_1","name":"ci","rawKey":"eg_x"}`)}
+	srv := newMockServer(t, create,
+		&mockRoute{method: "GET", path: "/api-keys", status: 200, body: envelope(`[]`)})
+	ts := srv.serve()
+	defer ts.Close()
+
+	d := resourceAPIKey().TestResourceData()
+	_ = d.Set("org_id", "org_1")
+	_ = d.Set("name", "ci")
+	_ = d.Set("scopes", []interface{}{"firewall:check"})
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
+	if diags := resourceAPIKeyCreate(context.Background(), d, c); diags.HasError() {
+		t.Fatalf("create failed: %v", diags)
+	}
+	got := bodyOf(t, create)
+	requireKeys(t, got, "orgId", "name")
+	forbidKeys(t, got, "org_id", "project_id", "expires_at")
+}
+
+// POST /api/v1/gateway/policies → discriminated union on `action`.
+func TestContract_GatewayPolicyCreateBody(t *testing.T) {
+	create := &mockRoute{method: "POST", path: "/gateway/policies", status: 201,
+		body: envelope(`{"rule":{"id":"gp_1","name":"n","effect":"deny"}}`)}
+	srv := newMockServer(t, create,
+		&mockRoute{method: "GET", path: "/gateway/policies", status: 200,
+			body: envelope(`{"rules":[],"appliedTemplates":[]}`)})
+	ts := srv.serve()
+	defer ts.Close()
+
+	d := resourceGatewayPolicy().TestResourceData()
+	_ = d.Set("project_id", "proj_1")
+	_ = d.Set("name", "n")
+	_ = d.Set("effect", "deny")
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
+	if diags := resourceGatewayPolicyCreate(context.Background(), d, c); diags.HasError() {
+		t.Fatalf("create failed: %v", diags)
+	}
+	got := bodyOf(t, create)
+	requireKeys(t, got, "action", "projectId", "rule")
+	if got["action"] != "create-rule" {
+		t.Errorf("action must be the literal \"create-rule\", got %v", got["action"])
+	}
+	forbidKeys(t, got, "project_id", "routing_strategy", "targets", "fallback_model")
+
+	rule, ok := got["rule"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("rule must be a nested object, got %T", got["rule"])
+	}
+	requireKeys(t, rule, "name", "effect", "priority")
+}
+
+// The provider must never point at the /v1 prefix again: that path is served by
+// the Next.js page router and returns an HTML login redirect, not the API.
+func TestProvider_DefaultBaseURLTargetsTheAPI(t *testing.T) {
+	def, err := Provider().Schema["base_url"].DefaultValue()
+	if err != nil {
+		t.Fatalf("base_url default: %v", err)
+	}
+	got, _ := def.(string)
+	if got != "https://evalguard.ai/api/v1" {
+		t.Errorf("default base_url must be the real API root, got %q", got)
+	}
+	if strings.HasSuffix(got, "/v1") && !strings.HasSuffix(got, "/api/v1") {
+		t.Errorf("base_url %q hits the page router, not /api/v1", got)
+	}
+}
+
+func TestProvider_NoNoOpDataSources(t *testing.T) {
+	// v1.0.0 advertised two data sources whose Read functions returned nil
+	// without ever calling the API. A data source with no HTTP call is a lie
+	// told in schema form.
+	if n := len(Provider().DataSourcesMap); n != 0 {
+		t.Errorf("expected 0 data sources until one is backed by a real read, got %d", n)
+	}
+}
+
+func TestJSONObjectHelpers_RoundTrip(t *testing.T) {
+	in := `{"a":1,"b":"two"}`
+	obj, err := decodeJSONObject(in)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	out, err := encodeJSONObject(obj)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	// Canonical (key-sorted) form must be stable, else every plan shows a diff.
+	again, err := decodeJSONObject(out)
+	if err != nil {
+		t.Fatalf("re-decode: %v", err)
+	}
+	if len(again) != 2 || again["b"] != "two" {
+		t.Errorf("round-trip lost data: %v", again)
+	}
+	if empty, _ := encodeJSONObject(map[string]interface{}{}); empty != "" {
+		t.Errorf("an empty object must encode to the empty string, got %q", empty)
+	}
+}
+
+func TestJSONObjectString_RejectsNonObject(t *testing.T) {
+	if d := jsonObjectString("[1,2]", cty.Path{}); !d.HasError() {
+		t.Error("a JSON array must be rejected")
+	}
+	if d := jsonObjectString("not json", cty.Path{}); !d.HasError() {
+		t.Error("invalid JSON must be rejected")
+	}
+	if d := jsonObjectString("", cty.Path{}); d.HasError() {
+		t.Error("an empty string is allowed (field omitted)")
+	}
+	if d := jsonObjectString(`{"a":1}`, cty.Path{}); d.HasError() {
+		t.Error("a valid JSON object must be accepted")
 	}
 }
 
@@ -607,5 +906,28 @@ func TestHttpDo_RetriesGetOn5xx(t *testing.T) {
 	_ = httpDo(context.Background(), c, http.MethodGet, "/x", nil, nil)
 	if got := atomic.LoadInt32(&calls); got != httpRetryMax+1 {
 		t.Errorf("idempotent GET should retry 5xx to httpRetryMax; want %d attempts, got %d", httpRetryMax+1, got)
+	}
+}
+
+// A server response that omits project_id must not blank the configured value —
+// GET /firewall/rules projects rows onto FirewallRuleV2, which has no such field.
+func TestResourceFirewallRule_ReadKeepsProjectIdWhenServerOmitsIt(t *testing.T) {
+	srv := newMockServer(t,
+		&mockRoute{method: "GET", path: "/firewall/rules", status: 200,
+			body: envelope(`[{"id":"r_1","name":"n","type":"regex","condition":{},"action":{},"enabled":true}]`)},
+	)
+	ts := srv.serve()
+	defer ts.Close()
+
+	d := resourceFirewallRule().TestResourceData()
+	d.SetId("r_1")
+	_ = d.Set("project_id", "proj_1")
+
+	c := &apiClient{apiKey: "k", baseURL: ts.URL, http: ts.Client()}
+	if diags := resourceFirewallRuleRead(context.Background(), d, c); diags.HasError() {
+		t.Fatalf("read failed: %v", diags)
+	}
+	if got := d.Get("project_id").(string); got != "proj_1" {
+		t.Errorf("project_id was blanked by a response that omits it: %q", got)
 	}
 }

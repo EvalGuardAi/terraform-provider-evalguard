@@ -1,10 +1,9 @@
 resource "evalguard_project" "example" {
-  name        = "checkout-assistant"
-  description = "LLM checkout assistant — evals, firewall, and gateway config"
-  environment = "production"
+  org_id = var.evalguard_org_id
+  name   = "checkout-assistant"
+  slug   = "checkout-assistant"
 
-  tags = {
-    team = "payments"
-    tier = "critical"
-  }
+  settings = jsonencode({
+    retention_days = 30
+  })
 }

@@ -2,7 +2,7 @@ terraform {
   required_providers {
     evalguard = {
       source  = "EvalGuardAi/evalguard"
-      version = "~> 1.0"
+      version = "~> 1.1"
     }
   }
 }
@@ -12,5 +12,5 @@ terraform {
 # base_url must be an https:// endpoint (http:// is allowed only for localhost).
 provider "evalguard" {
   # api_key  = var.evalguard_api_key
-  # base_url = "https://api.evalguard.ai/v1"
+  # base_url = "https://evalguard.ai/api/v1"
 }

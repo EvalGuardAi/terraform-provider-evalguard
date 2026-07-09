@@ -1,5 +1,5 @@
-// Self-contained example exercising every resource + data source. This is the
-// config CI runs `terraform validate` against (the per-resource files under
+// Self-contained example exercising every resource. This is the config CI runs
+// `terraform validate` against (the per-resource files under
 // examples/resources/** are registry doc snippets — real, fmt-checked HCL, but
 // they reference a shared project and omit the provider block, so they are not
 // meant to validate standalone).
@@ -8,7 +8,7 @@ terraform {
   required_providers {
     evalguard = {
       source  = "EvalGuardAi/evalguard"
-      version = "~> 1.0"
+      version = "~> 1.1"
     }
   }
 }
@@ -17,72 +17,65 @@ provider "evalguard" {
   # api_key is read from EVALGUARD_API_KEY by default.
 }
 
-resource "evalguard_project" "example" {
-  name        = "checkout-assistant"
-  description = "LLM checkout assistant"
-  environment = "production"
+variable "evalguard_org_id" {
+  type        = string
+  description = "Organization that owns these resources."
+}
 
-  tags = {
-    team = "payments"
-  }
+resource "evalguard_project" "example" {
+  org_id = var.evalguard_org_id
+  name   = "checkout-assistant"
+  slug   = "checkout-assistant"
+
+  settings = jsonencode({
+    retention_days = 30
+  })
 }
 
 resource "evalguard_api_key" "ci" {
-  project_id = evalguard_project.example.id
-  name       = "ci-pipeline"
-  scopes     = ["eval:read", "eval:write", "security:scan"]
+  org_id = var.evalguard_org_id
+  name   = "ci-firewall-check"
+  scopes = ["firewall:check"]
 }
 
-resource "evalguard_firewall_rule" "block_pii" {
+resource "evalguard_firewall_rule" "block_injection" {
   project_id = evalguard_project.example.id
-  name       = "block-ssn-in-prompt"
-  rule_type  = "block"
+  name       = "block-prompt-injection"
+  type       = "regex"
   priority   = 10
 
-  conditions {
-    field    = "prompt"
-    operator = "regex"
-    value    = "\\b\\d{3}-\\d{2}-\\d{4}\\b"
-  }
+  condition = jsonencode({
+    pattern = "(?i)ignore (all )?previous instructions"
+  })
+
+  action = jsonencode({
+    type = "block"
+  })
 }
 
 resource "evalguard_eval_schedule" "nightly" {
-  project_id = evalguard_project.example.id
-  name       = "nightly-regression"
-  dataset_id = "ds_checkout_golden"
-  model      = "gpt-4o-mini"
-  metrics    = ["faithfulness", "answer-relevance"]
-  cron       = "0 */6 * * *"
+  project_id      = evalguard_project.example.id
+  name            = "nightly-regression"
+  cron_expression = "0 3 * * *"
 
-  notification_channels {
-    type   = "slack"
-    target = "https://hooks.slack.com/services/T000/B000/XXXX"
-  }
+  config = jsonencode({
+    model   = "gpt-4"
+    scorers = ["exact-match"]
+  })
 }
 
-resource "evalguard_gateway_policy" "prod_routing" {
-  project_id       = evalguard_project.example.id
-  name             = "prod-cost-optimized"
-  routing_strategy = "cost_optimized"
-  cache_ttl_s      = 300
+resource "evalguard_gateway_policy" "deny_external_http" {
+  project_id = evalguard_project.example.id
+  name       = "deny-external-http"
+  effect     = "deny"
+  priority   = 50
 
-  targets {
-    provider = "anthropic"
-    model    = "claude-sonnet-5"
-    weight   = 3
-  }
-
-  targets {
-    provider = "openai"
-    model    = "gpt-4o"
-    weight   = 1
-  }
+  conditions = jsonencode({
+    tools = ["http.get"]
+  })
 }
 
-data "evalguard_eval_results" "latest" {
-  project_id = evalguard_project.example.id
-}
-
-data "evalguard_security_report" "current" {
-  project_id = evalguard_project.example.id
+output "ci_api_key" {
+  value     = evalguard_api_key.ci.key
+  sensitive = true
 }
