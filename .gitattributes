@@ -1,0 +1,5 @@
+# Deterministic LF endings in the repo (blobs) regardless of the OS that commits.
+# The CI/release workflows run on Ubuntu and contain shell heredocs + gofmt
+# checks that break on CRLF, so this must stay LF-normalized.
+* text=auto eol=lf
+*.exe binary

@@ -1,0 +1,51 @@
+name: Release
+
+# Builds, signs, and publishes a GitHub Release the Terraform Registry ingests.
+# This is the standalone mirror, so releases are tagged `vX.Y.Z` (the Registry's
+# required convention) — NOT the monorepo's `terraform-provider-v*` prefix.
+# See PUBLISHING.md for the one-time registry + GPG setup and the procedure.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + sign but do not create a GitHub release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # create the GitHub Release
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # Import the signing key the Terraform Registry is configured to trust.
+      - name: Import GPG signing key
+        id: import_gpg
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.TERRAFORM_GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.TERRAFORM_GPG_PASSPHRASE }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: >-
+            release --clean
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--snapshot' || '' }}
+        env:
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

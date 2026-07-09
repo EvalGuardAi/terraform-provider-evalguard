@@ -1,0 +1,16 @@
+# Build output
+terraform-provider-evalguard
+terraform-provider-evalguard.exe
+*_v*.exe
+dist/
+coverage.out
+
+# Local terraform state / plugin cache
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+
+# GPG / secrets — never commit
+*.asc
+private.*
