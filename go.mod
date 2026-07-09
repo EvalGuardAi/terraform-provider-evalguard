@@ -2,7 +2,7 @@ module github.com/EvalGuardAi/terraform-provider-evalguard
 
 go 1.25.8
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	github.com/hashicorp/go-cty v1.5.0
